@@ -1,7 +1,8 @@
-import cohere
 import requests
 from bs4 import BeautifulSoup
 from PyPDF2 import PdfReader
+import json
+import time
 
 
 def extract_text_from_url(url):
@@ -24,7 +25,7 @@ def extract_text_from_url(url):
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         text = ' '.join(chunk for chunk in chunks if chunk)
 
-        return text[:8000]  # Increased limit for more context
+        return text[:8000]
     except Exception as e:
         return f"Error extracting URL content: {str(e)}"
 
@@ -34,100 +35,256 @@ def extract_text_from_pdf(uploaded_file):
     try:
         reader = PdfReader(uploaded_file)
         text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        return text[:8000]  # Increased limit for more context
+        return text[:8000]
     except Exception as e:
         return f"Error reading PDF: {str(e)}"
 
 
-def get_upwork_proposal(api_key, prompt):
-    """Generate Upwork proposal using Cohere's chat API with specialized prompting."""
+def get_huggingface_completion(hf_token, prompt, model_name="microsoft/DialoGPT-medium"):
+    """Generate completion using Hugging Face Inference API (FREE!)"""
     try:
-        co = cohere.Client(api_key)
+        # Free Hugging Face models - no quota limits!
+        API_URL = f"https://api-inference.huggingface.co/models/{model_name}"
+        headers = {"Authorization": f"Bearer {hf_token}"}
 
-        system_message = """You are an elite Upwork proposal writer with a 90%+ win rate on technical projects. Your proposals are known for:
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_length": 1000,
+                "temperature": 0.7,
+                "do_sample": True,
+                "top_p": 0.9
+            }
+        }
 
-1. IMMEDIATE TECHNICAL CREDIBILITY - You demonstrate deep understanding of the specific technical challenges mentioned in the job posting
-2. CONCRETE PROOF - You provide specific examples, metrics, and technical details from past work that directly relate to their needs
-3. NO FLUFF - Every sentence adds value. No generic enthusiasm or "I'm excited" openings
-4. SOLUTION-FOCUSED - You outline specific technical approaches and methodologies you'll use
-5. UPFRONT VALUE - You provide insights or identify potential challenges that show your expertise
+        response = requests.post(API_URL, headers=headers, json=payload)
 
-STRUCTURE YOUR PROPOSALS:
-1. Direct Problem Statement - Show you understand their core challenge
-2. Technical Solution Overview - Specific tools, methods, and approach
-3. Relevant Experience with Metrics - Concrete examples with measurable results
-4. Technical Deep-dive - Show expertise through specific technical knowledge
-5. Practical Next Steps - Immediate actions you'll take
+        if response.status_code == 503:
+            # Model is loading, wait and retry
+            time.sleep(20)
+            response = requests.post(API_URL, headers=headers, json=payload)
 
-CRITICAL REQUIREMENTS:
-- Stay under 5000 characters (roughly 800-900 words)
-- Use technical terminology appropriate to the field
-- Include specific metrics and results from past work
-- Mention exact tools, technologies, and methodologies
-- Avoid generic phrases like "I'm excited" or "perfect fit"
-- Focus on what you'll deliver, not why you're great
-- End with specific questions or next steps
+        response.raise_for_status()
+        result = response.json()
 
-Remember: Clients hire based on confidence in your ability to solve their specific problem. Demonstrate that confidence through technical knowledge and proven results."""
-
-        response = co.chat(
-            model="command-r-plus",
-            message=prompt,
-            preamble=system_message,
-            max_tokens=1200,
-            temperature=0.6  # Slightly lower for more focused responses
-        )
-
-        return response.text.strip()
+        if isinstance(result, list) and len(result) > 0:
+            return result[0].get('generated_text', '').replace(prompt, '').strip()
+        else:
+            return result.get('generated_text', '').replace(prompt, '').strip()
 
     except Exception as e:
-        if "unauthorized" in str(e).lower():
-            raise Exception("Invalid API key. Please check your Cohere API key.")
-        elif "quota" in str(e).lower() or "limit" in str(e).lower():
-            raise Exception("API quota exceeded. Please check your Cohere account limits.")
+        raise Exception(f"Hugging Face API error: {str(e)}")
+
+
+def get_groq_completion(api_key, prompt):
+    """Generate completion using Groq (FREE tier - very fast!)"""
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        # Simplified system message to avoid token issues
+        system_content = """You are an expert Upwork proposal writer. Create winning proposals that:
+- Lead with their specific technical challenge (no generic enthusiasm)
+- Include concrete metrics from relevant experience
+- Use technical terminology correctly
+- Stay under 5000 characters
+- End with clear next steps
+Focus on technical competence and proven results."""
+
+        payload = {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_content
+                },
+                {
+                    "role": "user",
+                    "content": prompt[:3000]  # Limit prompt length
+                }
+            ],
+            "model": "llama3-8b-8192",  # More reliable free model
+            "temperature": 0.7,
+            "max_tokens": 800,
+            "top_p": 1,
+            "stream": False
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+        # Debug: Print response details
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Headers: {dict(response.headers)}")
+
+        if response.status_code != 200:
+            print(f"Response Text: {response.text}")
+
+        if response.status_code == 400:
+            # Try with mixtral model instead
+            payload["model"] = "mixtral-8x7b-32768"
+            payload["max_tokens"] = 500
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+        response.raise_for_status()
+
+        try:
+            result = response.json()
+        except json.JSONDecodeError as e:
+            raise Exception(f"Invalid JSON response from Groq: {response.text[:500]}")
+
+        # Better error handling for response structure
+        if not isinstance(result, dict):
+            raise Exception(f"Unexpected response type: {type(result)}")
+
+        if 'error' in result:
+            error_msg = result.get('error', {})
+            if isinstance(error_msg, dict):
+                raise Exception(f"Groq API error: {error_msg.get('message', 'Unknown error')}")
+            else:
+                raise Exception(f"Groq API error: {error_msg}")
+
+        if 'choices' not in result:
+            raise Exception(f"No 'choices' in response. Full response: {result}")
+
+        choices = result.get('choices', [])
+        if not choices or len(choices) == 0:
+            raise Exception(f"Empty choices array. Full response: {result}")
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            raise Exception(f"Invalid choice format: {first_choice}")
+
+        if 'message' not in first_choice:
+            raise Exception(f"No 'message' in choice. Choice: {first_choice}")
+
+        message = first_choice['message']
+        if not isinstance(message, dict):
+            raise Exception(f"Invalid message format: {message}")
+
+        if 'content' not in message:
+            raise Exception(f"No 'content' in message. Message: {message}")
+
+        content = message['content']
+        if content is None:
+            raise Exception("Message content is None")
+
+        return content.strip()
+
+    except requests.exceptions.RequestException as e:
+        if "400" in str(e):
+            raise Exception(f"Groq API error - Invalid request. Check your API key and try again. Details: {str(e)}")
+        elif "401" in str(e):
+            raise Exception("Invalid Groq API key. Get a new one at https://console.groq.com/")
+        elif "429" in str(e):
+            raise Exception("Rate limit exceeded. Please wait a moment and try again.")
         else:
-            raise Exception(f"Cohere API error: {str(e)}")
+            raise Exception(f"Groq API network error: {str(e)}")
+    except Exception as e:
+        if "object is not subscriptable" in str(e):
+            raise Exception(
+                f"Groq API returned unexpected format. This might be due to rate limits or API changes. Try again in a moment.")
+        raise Exception(f"Groq API error: {str(e)}")
+
+
+def get_ollama_completion(prompt, model="llama2", ollama_url="http://localhost:11434"):
+    """Generate completion using local Ollama (100% FREE!)"""
+    try:
+        url = f"{ollama_url}/api/generate"
+
+        payload = {
+            "model": model,
+            "prompt": f"""You are an expert Upwork proposal writer. Create a technical, results-focused proposal that demonstrates deep understanding and proven capability.
+
+Requirements:
+- Lead with their specific technical challenge
+- Include concrete metrics from past work
+- Use industry terminology correctly  
+- Stay under 5000 characters
+- Focus on solutions, not enthusiasm
+- End with clear next steps
+
+{prompt}
+
+Generate a winning proposal:""",
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "num_predict": 800
+            }
+        }
+
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+
+        result = response.json()
+        return result.get('response', '').strip()
+
+    except Exception as e:
+        raise Exception(f"Ollama error: {str(e)} - Make sure Ollama is running locally")
+
+
+def get_free_completion(prompt, provider="groq", **kwargs):
+    """Unified interface for all free LLM providers"""
+
+    if provider == "huggingface":
+        hf_token = kwargs.get('hf_token')
+        model_name = kwargs.get('model_name', 'microsoft/DialoGPT-medium')
+        return get_huggingface_completion(hf_token, prompt, model_name)
+
+    elif provider == "groq":
+        api_key = kwargs.get('api_key')
+        return get_groq_completion(api_key, prompt)
+
+    elif provider == "ollama":
+        model = kwargs.get('model', 'llama2')
+        ollama_url = kwargs.get('ollama_url', 'http://localhost:11434')
+        return get_ollama_completion(prompt, model, ollama_url)
+
+    else:
+        raise Exception(f"Unknown provider: {provider}")
 
 
 def create_upwork_prompt(job_description, supporting_content):
-    """Create a specialized prompt for Upwork proposals with technical focus."""
+    """Create optimized prompt for any LLM provider"""
 
-    # Extract key technical requirements and KPIs from job description
-    jd_preview = job_description[:4000] if job_description else "No job description provided"
-    content_preview = supporting_content[:4000] if supporting_content else "No supporting content provided"
+    # Limit content to avoid token issues
+    jd_preview = job_description[:2000] if job_description else "No job description provided"
+    content_preview = supporting_content[:2000] if supporting_content else "No supporting content provided"
 
-    prompt = f"""
-    Analyze this Upwork job posting and create a winning proposal that demonstrates deep technical understanding and proven capability.
+    prompt = f"""Create a winning Upwork proposal for this job posting.
 
-    **CRITICAL ANALYSIS REQUIREMENTS:**
-    1. Identify the TOP 3 technical challenges or requirements from the job posting
-    2. Extract specific KPIs, metrics, or success criteria mentioned
-    3. Note any technical tools, platforms, or methodologies specified
-    4. Identify potential pain points or challenges not explicitly mentioned
-    
-    **MY TECHNICAL BACKGROUND:**
-    {content_preview}
-    
-    **JOB POSTING TO ANALYZE:**
-    {jd_preview}
-    
-    **PROPOSAL REQUIREMENTS:**
-    - Lead with the most critical technical challenge they face
-    - Provide specific examples from my background that directly address their needs
-    - Include concrete metrics and results from previous similar work
-    - Demonstrate technical depth by mentioning specific tools, methodologies, or approaches
-    - Show understanding of their business context and industry
-    - Outline specific deliverables and technical approach
-    - Stay under 5000 characters total
-    - NO generic enthusiasm - focus on technical competence and results
-    
-    **STRUCTURE:**
-    1. Problem identification (their core challenge)
-    2. Technical solution approach (specific methods/tools)
-    3. Relevant experience with metrics (proof of capability)
-    4. Technical implementation details (show expertise)
-    5. Specific deliverables and timeline
-    6. Clear next steps or questions
-    
-    Create a proposal that makes the client think: "This person clearly understands our technical needs and has the exact experience to solve this problem."
-    """
+**MY TECHNICAL BACKGROUND:**
+{content_preview}
+
+**JOB POSTING:**
+{jd_preview}
+
+**ANALYSIS REQUIREMENTS:**
+1. Identify their TOP technical challenge or requirement
+2. Extract specific KPIs, metrics, or success criteria mentioned  
+3. Note technical tools/platforms they specified
+4. Find potential pain points not explicitly mentioned
+
+**PROPOSAL STRUCTURE:**
+1. Lead with their core technical challenge (no "excited" language)
+2. Specific technical solution approach with exact tools/methods
+3. Relevant experience with concrete metrics and results
+4. Technical implementation details showing expertise
+5. Clear deliverables and timeline
+6. Intelligent questions or next steps
+
+**CRITICAL REQUIREMENTS:**
+- Under 5000 characters total
+- Use technical terminology from the job posting
+- Include specific metrics from my background that match their needs
+- Show understanding of their business context
+- Focus on what I'll deliver, not why I'm great
+- Demonstrate technical competence through specific knowledge
+
+Create a proposal that makes them think: "This person understands our exact technical needs and has proven experience solving this specific problem."
+"""
+
+    return prompt
