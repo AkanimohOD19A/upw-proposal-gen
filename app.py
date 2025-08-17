@@ -1,5 +1,7 @@
 import streamlit as st
+import pyperclip
 from utils.helpers import *
+
 
 # Page configuration
 st.set_page_config(
@@ -47,7 +49,7 @@ st.markdown('<h1 class="main-header">🆓 Free Upwork Proposal Generator</h1>', 
 st.markdown("**Generate winning proposals using completely free LLM APIs - no quotas, no limits!**")
 
 # Sidebar - LLM Provider Selection
-with st.sidebar:
+with (st.sidebar):
     st.header("🤖 Choose Your FREE LLM")
 
     provider = st.selectbox(
@@ -63,11 +65,12 @@ with st.sidebar:
         st.markdown("• **Fastest** free option")
         st.markdown("• High-quality Mixtral model")
         st.markdown("• 6,000 requests/hour free")
-        api_key = st.text_input(
-            "Groq API Key",
-            type="password",
-            help="Get free key at https://console.groq.com/"
-        )
+        api_key = st.secrets["groq_api_key"]
+        # st.text_input(
+        #     "Groq API Key",
+        #     type="password",
+        #     help="Get free key at https://console.groq.com/"
+        # )
         st.markdown("**Get your free key:** https://console.groq.com/", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -279,13 +282,17 @@ if st.button("🆓 Generate FREE Proposal", type="primary", disabled=not can_gen
                         use_container_width=True
                     )
 
-                with col2:
-                    if st.button("🔄 Generate Another", use_container_width=True):
-                        st.rerun()
-
-                with col3:
-                    st.button("📋 Copy Text", use_container_width=True,
-                              help="Select all text above and Ctrl+C")
+                # with col2:
+                #     if st.button("🔄 Generate Another", use_container_width=True):
+                #         st.rerun()
+                #
+                # with col3:
+                #     # Use a simple approach with instructions
+                #     if st.button("📋 Select Text", use_container_width=True):
+                #         pyperclip.copy(result)
+                #         st.success('Text copied successfully!')
+                    # st.button("📋 Copy Text", use_container_width=True,
+                    #           help="Select all text above and Ctrl+C")
 
                 # Analysis
                 if char_count <= 5000:
